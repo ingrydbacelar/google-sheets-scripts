@@ -1,0 +1,798 @@
+//CONTROLE DE APROVEITAMENTO DE LEADS
+//Preenche apenas 3 tabelas do Dashboard:
+// Aproveitamento por LDR
+// Aproveitamento por ICP
+// Motivo de Descarte
+// (E as células indicando a semana que está sendo processada)
+// REGRA: LER -> CONTAR -> REGISTRAR -> PREENCHER 
+// O script NÃO calcula percentuais ou aproveitamento (as fórmulas responsáveis já existem no Dashboard).
+
+const CONFIG = {
+  PASTA_GERAL_ID: "1dCz2LI1BJfaSCdCXY3l5xf3jiubEXEZu",
+  PLANILHA_AUTOMACAO_ID: "1Rwa1ADnGNx3v6DNnru1gjoOVJWPJUP2Z3fjOCz4cV1o",
+
+  NOME_ABA_DASHBOARD: "dashboard",
+
+  SEMANA_INICIAL: 97,
+
+  // Deixe null para processar sempre a semana mais recente (comportamento padrão).
+  SEMANA_FORCAR: null,
+
+  CABECALHO_CLASSIFICACAO: "Status do Lead",
+  // Coluna do motivo do descarte.
+  CABECALHO_MOTIVO: "Motivo de descarte",
+  COLUNA_MOTIVO: "AD",
+
+  // Coluna do segmento da empresa (a partir da linha 2).
+  CABECALHO_ICP: "Setor da Empresa",
+  COLUNA_ICP: "J",
+
+  LDRS: ["Ingryd", "Danilo", "Emilio", "Machara", "Pedro", "Patrick"],
+
+  MOTIVOS: [
+    "Sem canal de contato",
+    "Fora do ICP/segmento",
+    "Abaixo do porte",
+    "Concorrente",
+    "Decisor incorreto",
+    "Empresa duplicada"
+  ],
+
+  // Segmentos exatamente como aparecem no Dashboard.
+  ICPS: [
+    "Tecnologia e Software",
+    "Fintech",
+    "Marketing",
+    "Engenharia",
+    "Ind. Metal",
+    "Ind. Alimentos"
+  ],
+
+  // Palavras-chave (normalizadas: minúsculas, sem acento).
+  ICP_PALAVRAS_CHAVE: {
+  // Palavras com até 4 letras (ti, saas, tech, eng) só casam como palavra
+  // inteira (evita "fintech" cair em "tech", por exemplo).
+  "Tecnologia e Software": ["tecnologia", "software", "ti software", "ti servico", "ti serviço", "ti", "saas", "tech", "informatica", "it services"],
+  "Fintech": ["fintech"],
+  "Marketing": ["marketing"],
+  "Engenharia": ["engenharia", "engenh", "engineering", "eng"],
+  "Ind. Metal": ["metal", "industria metal", "ind. metal", "ind metal", "metalmec"],
+  "Ind. Alimentos": ["aliment", "industria aliment", "ind. alimentos", "ind alimentos"]
+  },
+
+  CLASSIFICACAO_HIGIENIZADO: "Higienizado",
+  CLASSIFICACAO_DESCARTADO: "Descartado",
+
+  // Outras opções do menu suspenso "Status do Lead" sem contabilizar como Higienizado ou Descarte.
+  CLASSIFICACOES_IGNORADAS: ["Verificar", "RED FLAG", "Excedente", "Outra lista"]
+};
+
+// Localização das células no Dashboard!
+// Layout atual: LDRs nas linhas 11-16 (Patrick na 16), ICPs nas 21-26,
+// Motivos nas 32-37. Se inserir/remover linhas de novo, troque os números.
+const CONFIG_DASHBOARD = {
+  // Aproveitamento por LDR (primeiro LDR = Ingryd, última = Patrick).
+  inicioLDR: 11,
+  colunaTotalLDR: "B",
+  colunaHigienizadosLDR: "C",
+  colunaDescartadosLDR: "D",
+
+  // Aproveitamento por ICP (primeira linha de dados = Tecnologia e Software).
+  inicioICP: 21,
+  colunaTotalICP: "B",
+  colunaHigienizadosICP: "C",
+  colunaDescartadosICP: "D",
+
+  // Motivo de Descarte: "Semana X" fica na linha rosa logo abaixo do título.
+  semanaMotivos: "A30",
+  inicioMotivos: 32,
+  colunaQuantidadeMotivos: "B",
+
+  // Células que indicam a semana processada.
+  semanaTopo: "C3",
+  semanaResumo: "A30"
+};
+
+/**
+ * =====================================================================
+ * ENDEREÇOS DA ABA "acompanhamento"
+ * (tabela com uma coluna por semana; linhas fixas conforme o layout
+ * atual — cada bloco tem Total / Higienizados / Descartados brutos;
+ * as linhas de Aproveitamento e % dos descartados já têm fórmula e
+ * NUNCA são escritas por este script)
+ * O bloco do Patrick vem logo abaixo do Pedro (7 linhas: título, 5 linhas
+ * e 1 em branco), por isso o bloco de Motivo desceu 7 linhas.
+ * =====================================================================
+ */
+const CONFIG_ACOMPANHAMENTO = {
+  NOME_ABA: "acompanhamento",
+
+  // Linha com os rótulos "Semana 97", "Semana 98"...
+  LINHA_CABECALHO_SEMANAS: 4,
+
+  // Bloco geral (Total / Higienizados / Descartados gerais da semana)
+  geral: { total: 5, higienizados: 6, descartados: 7 },
+
+  // Um bloco de 3 linhas (Total/Higienizados/Descartados) por segmento ICP
+  // — as chaves precisam bater com CONFIG.ICPS
+  icp: {
+    "Tecnologia e Software": { total: 13, higienizados: 14, descartados: 15 },
+    "Fintech": { total: 20, higienizados: 21, descartados: 22 },
+    "Marketing": { total: 27, higienizados: 28, descartados: 29 },
+    "Engenharia": { total: 34, higienizados: 35, descartados: 36 },
+    "Ind. Metal": { total: 41, higienizados: 42, descartados: 43 },
+    "Ind. Alimentos": { total: 48, higienizados: 49, descartados: 50 }
+  },
+
+  // Um bloco de 3 linhas (Total/Higienizados/Descartados) por LDR
+  // — as chaves precisam bater com CONFIG.LDRS
+  ldr: {
+    "Ingryd": { total: 56, higienizados: 57, descartados: 58 },
+    "Danilo": { total: 63, higienizados: 64, descartados: 65 },
+    "Emilio": { total: 70, higienizados: 71, descartados: 72 },
+    "Machara": { total: 77, higienizados: 78, descartados: 79 },
+    "Pedro": { total: 84, higienizados: 85, descartados: 86 },
+    "Patrick": { total: 91, higienizados: 92, descartados: 93 }
+  },
+
+  // Motivo de Descarte: linha do Total geral de descartados + uma linha
+  // por motivo (as chaves precisam bater com CONFIG.MOTIVOS)
+  motivoTotal: 98,
+  motivo: {
+    "Sem canal de contato": 99,
+    "Fora do ICP/segmento": 100,
+    "Abaixo do porte": 101,
+    "Concorrente": 102,
+    "Decisor incorreto": 103,
+    "Empresa duplicada": 104
+  }
+};
+
+// MENU
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu("Automação")
+    .addItem("Atualizar aproveitamento", "atualizarAproveitamentoLeadsComAviso")
+    .addItem("Atualizar acompanhamento", "atualizarAcompanhamentoComAviso")
+    .addToUi();
+}
+
+function atualizarAproveitamentoLeadsComAviso() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    atualizarAproveitamentoLeads();
+    ui.alert("Atualização concluída com sucesso.");
+  } catch (erro) {
+    ui.alert("Erro ao atualizar: " + erro);
+  }
+}
+
+function atualizarAcompanhamentoComAviso() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    atualizarAcompanhamento();
+    ui.alert("Acompanhamento atualizado com sucesso.");
+  } catch (erro) {
+    ui.alert("Erro ao atualizar acompanhamento: " + erro);
+  }
+}
+
+// FUNÇÃO PRINCIPAL
+
+function atualizarAproveitamentoLeads() {
+  const pastaGeral = DriveApp.getFolderById(CONFIG.PASTA_GERAL_ID);
+  const planilhaAutomacao = SpreadsheetApp.openById(CONFIG.PLANILHA_AUTOMACAO_ID);
+  const abaDashboard = planilhaAutomacao.getSheetByName(CONFIG.NOME_ABA_DASHBOARD);
+
+  if (!abaDashboard) {
+    throw new Error('Verifique se a aba "' + CONFIG.NOME_ABA_DASHBOARD + '" existe.');
+  }
+
+  // Antes de processar qualquer coisa, confere se as linhas configuradas
+  // batem com o Dashboard (falha rápido, sem escrever nada, se não baterem).
+  conferirRotulos_(abaDashboard, esperadosDashboard_(), CONFIG.NOME_ABA_DASHBOARD);
+
+  // Encontrar a pasta semanal (forçada ou a mais recente)
+  const pastaAlvo = CONFIG.SEMANA_FORCAR
+    ? encontrarPastaSemanalPorNumero_(pastaGeral, CONFIG.SEMANA_FORCAR)
+    : encontrarPastaSemanalMaisRecente_(pastaGeral);
+
+  if (!pastaAlvo) {
+    throw new Error('Nenhuma pasta semanal válida foi encontrada. ' +
+      'Exemplo esperado: "98. Semana 24/08/26".');
+  }
+
+  // Processar a semana
+  const dadosSemana = processarPastaSemanal_(pastaAlvo.pasta, pastaAlvo.semana);
+
+  // Escrever no Dashboard
+  preencherDashboard_(abaDashboard, dadosSemana);
+
+  Logger.log("Atualização concluída com sucesso. Semana processada: " + dadosSemana.semana);
+}
+
+// Processa a pasta pelo número escolhido (usado quando SEMANA_FORCAR está definido em CONFIG, usar para testes).
+
+function encontrarPastaSemanalPorNumero_(pastaGeral, numeroSemana) {
+  const subpastas = pastaGeral.getFolders();
+
+  while (subpastas.hasNext()) {
+    const pasta = subpastas.next();
+    const nome = pasta.getName().trim();
+    const match = nome.match(/^(\d+)\.\s*Semana\s+(\d{2})\/(\d{2})\/(\d{2})$/i);
+    if (!match) continue;
+
+    const semana = parseInt(match[1], 10);
+    if (semana !== numeroSemana) continue;
+
+    return { pasta: pasta, semana: semana };
+  }
+  return null;
+}
+
+// Encontra a pasta mais recente (99. Semana...).
+
+function encontrarPastaSemanalMaisRecente_(pastaGeral) {
+  let maisRecente = null; 
+  const subpastas = pastaGeral.getFolders();
+
+  while (subpastas.hasNext()) {
+    const pasta = subpastas.next();
+    const nome = pasta.getName().trim();
+    const match = nome.match(/^(\d+)\.\s*Semana\s+(\d{2})\/(\d{2})\/(\d{2})$/i);
+    if (!match) continue;
+
+    const semana = parseInt(match[1], 10);
+    if (semana < CONFIG.SEMANA_INICIAL) continue;
+
+    if (!maisRecente || semana > maisRecente.semana) {
+      maisRecente = { pasta: pasta, semana: semana };
+    }
+  }
+  return maisRecente;
+}
+
+// Processa a pasta semanal
+
+function processarPastaSemanal_(pasta, semana) {
+  const dadosSemana = {
+    semana: semana,
+    total: 0,
+    higienizados: 0,
+    descartados: 0,
+    motivos: {},
+    ldrs: {},
+    icps: {}
+  };
+
+  CONFIG.MOTIVOS.forEach(function (m) { dadosSemana.motivos[m] = 0; });
+  CONFIG.LDRS.forEach(function (ldr) {
+    dadosSemana.ldrs[ldr] = { total: 0, higienizados: 0, descartados: 0 };
+  });
+  CONFIG.ICPS.forEach(function (icp) {
+    dadosSemana.icps[icp] = { total: 0, higienizados: 0, descartados: 0 };
+  });
+
+  const arquivos = pasta.getFiles();
+
+  while (arquivos.hasNext()) {
+    const arquivo = arquivos.next();
+    if (arquivo.getMimeType() !== MimeType.GOOGLE_SHEETS) continue;
+
+    const nomeArquivo = arquivo.getName();
+    const ldrIdentificado = identificarLdrPeloNome_(nomeArquivo);
+    if (!ldrIdentificado) {
+      Logger.log("Planilha não identificada como LDR: " + nomeArquivo);
+      continue;
+    }
+
+    try {
+      const resultado = processarPlanilhaLdr_(arquivo.getId());
+
+      dadosSemana.total += resultado.total;
+      dadosSemana.higienizados += resultado.higienizados;
+      dadosSemana.descartados += resultado.descartados;
+
+      CONFIG.MOTIVOS.forEach(function (m) {
+        dadosSemana.motivos[m] += resultado.motivos[m] || 0;
+      });
+      CONFIG.ICPS.forEach(function (icp) {
+        const r = resultado.icps[icp] || { total: 0, higienizados: 0, descartados: 0 };
+        dadosSemana.icps[icp].total += r.total;
+        dadosSemana.icps[icp].higienizados += r.higienizados;
+        dadosSemana.icps[icp].descartados += r.descartados;
+      });
+
+      dadosSemana.ldrs[ldrIdentificado].total += resultado.total;
+      dadosSemana.ldrs[ldrIdentificado].higienizados += resultado.higienizados;
+      dadosSemana.ldrs[ldrIdentificado].descartados += resultado.descartados;
+
+    } catch (erro) {
+      Logger.log("Erro ao processar '" + nomeArquivo + "': " + erro);
+    }
+  }
+
+  return dadosSemana;
+}
+
+// LDR pelo nome do arquivo (DW Ingryd...)
+
+function identificarLdrPeloNome_(nomeArquivo) {
+  const nomeNormalizado = removerAcentos_(nomeArquivo).toLowerCase();
+  for (let i = 0; i < CONFIG.LDRS.length; i++) {
+    const ldr = CONFIG.LDRS[i];
+    const ldrNormalizado = removerAcentos_(ldr).toLowerCase();
+    if (nomeNormalizado.indexOf(ldrNormalizado) !== -1) return ldr;
+  }
+  return null;
+}
+
+// Identifica o segmento pela coluna "Setor da Empresa".
+
+function identificarIcp_(textoSetor) {
+  if (!textoSetor) return null;
+  const normalizado = removerAcentos_(textoSetor.toString()).toLowerCase().trim();
+
+  for (let i = 0; i < CONFIG.ICPS.length; i++) {
+    const icp = CONFIG.ICPS[i];
+    const palavrasChave = CONFIG.ICP_PALAVRAS_CHAVE[icp] || [];
+    for (let j = 0; j < palavrasChave.length; j++) {
+      const chave = removerAcentos_(palavrasChave[j]).toLowerCase();
+      if (chave.length <= 4) {
+        // Palavra curta: só vale como palavra inteira ("ti" casa com
+        // "TI - Serviços", mas não com "industria" ou "fintech").
+        const regex = new RegExp("(^|[^a-z0-9])" + chave + "($|[^a-z0-9])");
+        if (regex.test(normalizado)) return icp;
+      } else if (normalizado.indexOf(chave) !== -1) {
+        return icp;
+      }
+    }
+  }
+  return null; 
+}
+
+// Identifica o motivo de descarte.
+
+function identificarMotivo_(textoMotivo) {
+  if (!textoMotivo) return null;
+  const normalizado = removerAcentos_(textoMotivo.toString()).toLowerCase().trim();
+
+  for (let i = 0; i < CONFIG.MOTIVOS.length; i++) {
+    const motivo = CONFIG.MOTIVOS[i];
+    const motivoNormalizado = removerAcentos_(motivo).toLowerCase().trim();
+    if (normalizado === motivoNormalizado) return motivo;
+  }
+  return null;
+}
+
+// Reconhece a classificação (Higienizado ou Descartado).
+
+function identificarClassificacao_(textoClassificacao) {
+  if (!textoClassificacao) return null;
+  const normalizado = removerAcentos_(textoClassificacao.toString()).toLowerCase().trim();
+
+  const higNormalizado = removerAcentos_(CONFIG.CLASSIFICACAO_HIGIENIZADO).toLowerCase().trim();
+  const descNormalizado = removerAcentos_(CONFIG.CLASSIFICACAO_DESCARTADO).toLowerCase().trim();
+
+  if (normalizado === higNormalizado) return CONFIG.CLASSIFICACAO_HIGIENIZADO;
+  if (normalizado === descNormalizado) return CONFIG.CLASSIFICACAO_DESCARTADO;
+
+  for (let i = 0; i < CONFIG.CLASSIFICACOES_IGNORADAS.length; i++) {
+    const ignoradaNormalizada = removerAcentos_(CONFIG.CLASSIFICACOES_IGNORADAS[i]).toLowerCase().trim();
+    if (normalizado === ignoradaNormalizada) return "IGNORADA";
+  }
+
+  return null; 
+}
+
+function removerAcentos_(texto) {
+  return texto.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+// PROCESSAR PLANILHA DO LDR (Lê "Status do Lead" em todas as abas).
+
+function processarPlanilhaLdr_(idPlanilha) {
+  const ss = SpreadsheetApp.openById(idPlanilha);
+
+  const resultado = { total: 0, higienizados: 0, descartados: 0, motivos: {}, icps: {} };
+  CONFIG.MOTIVOS.forEach(function (m) { resultado.motivos[m] = 0; });
+  CONFIG.ICPS.forEach(function (icp) {
+    resultado.icps[icp] = { total: 0, higienizados: 0, descartados: 0 };
+  });
+
+  const colMotivoPadrao = letraColunaParaIndice_(CONFIG.COLUNA_MOTIVO);
+  const colIcpPadrao = letraColunaParaIndice_(CONFIG.COLUNA_ICP);
+
+  ss.getSheets().forEach(function (aba) {
+    const lastRow = aba.getLastRow();
+    const lastCol = aba.getLastColumn();
+    if (lastRow < 2 || lastCol < 1) return;
+
+    // Procura o cabeçalho "Status do Lead" nas primeiras 10 linhas (e não só
+    // na linha 1): se a aba tiver uma linha de título acima do cabeçalho,
+    // ela não é mais ignorada em silêncio.
+    const topo = aba.getRange(1, 1, Math.min(lastRow, 10), lastCol).getValues();
+    let linhaCabecalho = -1;
+    let colClassificacao = -1;
+    for (let r = 0; r < topo.length; r++) {
+      const c = encontrarColunaPorCabecalho_(topo[r], CONFIG.CABECALHO_CLASSIFICACAO);
+      if (c !== -1) {
+        linhaCabecalho = r;
+        colClassificacao = c;
+        break;
+      }
+    }
+    if (linhaCabecalho === -1) return; // aba sem "Status do Lead": ignora
+
+    const cabecalho = topo[linhaCabecalho];
+
+    // Abas de setor (ex: "Tecnologia", "Fintech"): o nome da aba indica o
+    // ICP dos leads dela. É usado quando a coluna "Setor da Empresa" não
+    // identifica o segmento (vazia, diferente, ou aba sem essa coluna).
+    const icpDaAba = identificarIcp_(aba.getName());
+
+    // "Motivo de descarte" e "Setor da Empresa" podem estar numa linha de
+    // cabeçalho diferente da do "Status do lead" (ex: status na linha 1 e
+    // demais títulos na linha 2). Procura nas primeiras linhas; se não
+    // achar, usa a letra da coluna configurada.
+    const achouMotivo = encontrarColunaNasLinhas_(topo, CONFIG.CABECALHO_MOTIVO);
+    const colMotivo = achouMotivo ? achouMotivo.coluna : colMotivoPadrao;
+
+    const achouIcp = encontrarColunaNasLinhas_(topo, CONFIG.CABECALHO_ICP);
+    const colIcp = achouIcp ? achouIcp.coluna : colIcpPadrao;
+
+    // Os dados começam depois da última linha de cabeçalho encontrada.
+    const ultimaLinhaCabecalho = Math.max(
+      linhaCabecalho,
+      achouMotivo ? achouMotivo.linha : 0,
+      achouIcp ? achouIcp.linha : 0
+    );
+    const primeiraLinhaDados = ultimaLinhaCabecalho + 2; // número da linha (1-based) logo abaixo do cabeçalho
+    const numLinhasDados = lastRow - (ultimaLinhaCabecalho + 1);
+    if (numLinhasDados < 1) return;
+
+    const numCols = Math.max(lastCol, colMotivo + 1, colIcp + 1);
+    const dados = aba.getRange(primeiraLinhaDados, 1, numLinhasDados, numCols).getValues();
+
+    for (let i = 0; i < dados.length; i++) {
+      const linha = dados[i];
+      const classificacaoBruta = (linha[colClassificacao] || "").toString().trim();
+      if (!classificacaoBruta) continue;
+      const classificacao = identificarClassificacao_(classificacaoBruta);
+
+      const textoSetor = colIcp < linha.length ? linha[colIcp] : "";
+      // Prioridade: setor escrito na linha; se não reconhecer, o setor da aba.
+      const icp = identificarIcp_(textoSetor) || icpDaAba;
+      if (!icp && textoSetor) {
+        Logger.log('ICP/Setor não reconhecido na coluna ' + (colIcp + 1) +
+          ' da aba "' + aba.getName() + '" (' + ss.getName() + '), linha ' + (i + primeiraLinhaDados) +
+          ': "' + textoSetor + '"');
+      }
+
+      if (classificacao === CONFIG.CLASSIFICACAO_HIGIENIZADO) {
+        resultado.higienizados++;
+        resultado.total++;
+        if (icp) {
+          resultado.icps[icp].higienizados++;
+          resultado.icps[icp].total++;
+        }
+
+      } else if (classificacao === CONFIG.CLASSIFICACAO_DESCARTADO) {
+        resultado.descartados++;
+        resultado.total++;
+        if (icp) {
+          resultado.icps[icp].descartados++;
+          resultado.icps[icp].total++;
+        }
+
+        const motivoBruto = (linha[colMotivo] || "").toString().trim();
+        const motivo = identificarMotivo_(motivoBruto);
+        if (motivo) {
+          resultado.motivos[motivo]++;
+        } else if (motivoBruto) {
+          Logger.log('Motivo não reconhecido na coluna ' + CONFIG.COLUNA_MOTIVO +
+            ' da aba "' + aba.getName() + '" (' + ss.getName() + '), linha ' + (i + primeiraLinhaDados) +
+            ': "' + motivoBruto + '"');
+        }
+
+      } else if (classificacao === "IGNORADA") {
+        // Outra lista, Verificar, RED FLAG e Excedente entram no "Total de leads", mas não em Higienizados ou Descartados.
+        resultado.total++;
+        if (icp) {
+          resultado.icps[icp].total++;
+        }
+
+      } else {
+        Logger.log('Classificação inesperada "' + classificacaoBruta + '" na aba "' +
+          aba.getName() + '" da planilha "' + ss.getName() + '", linha ' + (i + primeiraLinhaDados));
+      }
+    }
+  });
+
+  return resultado;
+}
+
+function encontrarColunaPorCabecalho_(linhaCabecalho, textoBuscado) {
+  if (!textoBuscado) return -1;
+  const buscado = removerAcentos_(textoBuscado).toLowerCase().trim();
+  for (let i = 0; i < linhaCabecalho.length; i++) {
+    const valor = removerAcentos_((linhaCabecalho[i] || "").toString()).toLowerCase().trim();
+    if (valor === buscado || valor.indexOf(buscado) !== -1) return i;
+  }
+  return -1;
+}
+
+// Procura um cabeçalho em várias linhas (as primeiras da aba) e devolve
+// { linha, coluna } (0-based) da primeira ocorrência, ou null.
+function encontrarColunaNasLinhas_(linhas, textoBuscado) {
+  for (let r = 0; r < linhas.length; r++) {
+    const c = encontrarColunaPorCabecalho_(linhas[r], textoBuscado);
+    if (c !== -1) return { linha: r, coluna: c };
+  }
+  return null;
+}
+
+function letraColunaParaIndice_(letra) {
+  let indice = 0;
+  for (let i = 0; i < letra.length; i++) {
+    indice = indice * 26 + (letra.toUpperCase().charCodeAt(i) - 64);
+  }
+  return indice - 1;
+}
+
+// ---------------------------------------------------------------------
+// CONFERÊNCIA DE LAYOUT (evita escrever na linha errada)
+// ---------------------------------------------------------------------
+// Antes de escrever, confere se o nome na coluna A de cada linha de destino
+// é o esperado (ex: linha do Patrick -> "Patrick"). Se alguma não bater,
+// o script PARA e não escreve nada, em vez de sobrescrever títulos,
+// cabeçalhos ou fórmulas de outra tabela.
+
+function normalizarRotulo_(texto) {
+  const t = (texto === null || texto === undefined) ? "" : texto.toString();
+  return removerAcentos_(t).toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function conferirRotulos_(aba, esperados, nomeAba) {
+  const maxLinha = esperados.reduce(function (m, e) { return Math.max(m, e.linha); }, 1);
+  const rotulos = aba.getRange(1, 1, maxLinha, 1).getValues().map(function (r) {
+    return normalizarRotulo_(r[0]);
+  });
+
+  const erros = [];
+  esperados.forEach(function (e) {
+    const encontrado = rotulos[e.linha - 1] || "";
+    if (!e.teste(encontrado)) {
+      erros.push('A' + e.linha + ' (esperado "' + e.descricao + '", encontrei "' + (encontrado || "vazio") + '")');
+    }
+  });
+
+  if (erros.length) {
+    throw new Error('O layout da aba "' + nomeAba + '" não bate com as linhas configuradas. ' +
+      'Nada foi escrito. Confira: ' + erros.join("; ") + '.');
+  }
+}
+
+function esperadosDashboard_() {
+  const e = [];
+  CONFIG.LDRS.forEach(function (ldr, i) {
+    e.push({ linha: CONFIG_DASHBOARD.inicioLDR + i, descricao: ldr,
+      teste: function (r) { return r === normalizarRotulo_(ldr); } });
+  });
+  CONFIG.ICPS.forEach(function (icp, i) {
+    e.push({ linha: CONFIG_DASHBOARD.inicioICP + i, descricao: icp,
+      teste: function (r) { return identificarIcp_(r) === icp; } });
+  });
+  CONFIG.MOTIVOS.forEach(function (motivo, i) {
+    e.push({ linha: CONFIG_DASHBOARD.inicioMotivos + i, descricao: motivo,
+      teste: function (r) { return r === normalizarRotulo_(motivo); } });
+  });
+  return e;
+}
+
+function esperadosAcompanhamento_() {
+  const e = [];
+  const rotuloIgual = function (texto) { return function (r) { return r === texto; }; };
+
+  function bloco(linhas, tituloDescricao, tituloTeste) {
+    if (!linhas) return;
+    if (tituloTeste) e.push({ linha: linhas.total - 1, descricao: tituloDescricao, teste: tituloTeste });
+    e.push({ linha: linhas.total, descricao: "Total", teste: rotuloIgual("total") });
+    e.push({ linha: linhas.higienizados, descricao: "Higienizados", teste: rotuloIgual("higienizados") });
+    e.push({ linha: linhas.descartados, descricao: "Descartados", teste: rotuloIgual("descartados") });
+  }
+
+  bloco(CONFIG_ACOMPANHAMENTO.geral);
+
+  CONFIG.ICPS.forEach(function (icp) {
+    bloco(CONFIG_ACOMPANHAMENTO.icp[icp], icp, function (r) { return identificarIcp_(r) === icp; });
+  });
+  CONFIG.LDRS.forEach(function (ldr) {
+    bloco(CONFIG_ACOMPANHAMENTO.ldr[ldr], ldr, rotuloIgual(normalizarRotulo_(ldr)));
+  });
+
+  if (CONFIG_ACOMPANHAMENTO.motivoTotal) {
+    e.push({ linha: CONFIG_ACOMPANHAMENTO.motivoTotal, descricao: "Total", teste: rotuloIgual("total") });
+  }
+  CONFIG.MOTIVOS.forEach(function (motivo) {
+    const linha = CONFIG_ACOMPANHAMENTO.motivo[motivo];
+    if (linha) e.push({ linha: linha, descricao: motivo, teste: rotuloIgual(normalizarRotulo_(motivo)) });
+  });
+  return e;
+}
+
+// Preencher apenas 3 tabelas do Dashboard:
+
+function preencherDashboard_(abaDashboard, dadosSemana) {
+  const semanaAtual = dadosSemana.semana;
+
+  // Células da semana processada para preencher
+  if (CONFIG_DASHBOARD.semanaTopo) {
+    abaDashboard.getRange(CONFIG_DASHBOARD.semanaTopo).setValue("Semana " + semanaAtual);
+  }
+  if (CONFIG_DASHBOARD.semanaResumo) {
+    abaDashboard.getRange(CONFIG_DASHBOARD.semanaResumo).setValue("Semana " + semanaAtual);
+  }
+
+  // Aproveitamento por LDR
+  CONFIG.LDRS.forEach(function (ldr, i) {
+    const linha = CONFIG_DASHBOARD.inicioLDR + i;
+    const dados = dadosSemana.ldrs[ldr] || { total: 0, higienizados: 0, descartados: 0 };
+    abaDashboard.getRange(CONFIG_DASHBOARD.colunaTotalLDR + linha).setValue(dados.total);
+    abaDashboard.getRange(CONFIG_DASHBOARD.colunaHigienizadosLDR + linha).setValue(dados.higienizados);
+    abaDashboard.getRange(CONFIG_DASHBOARD.colunaDescartadosLDR + linha).setValue(dados.descartados);
+  });
+
+  // Aproveitamento por ICP
+  CONFIG.ICPS.forEach(function (icp, i) {
+    const linha = CONFIG_DASHBOARD.inicioICP + i;
+    const dados = dadosSemana.icps[icp] || { total: 0, higienizados: 0, descartados: 0 };
+    abaDashboard.getRange(CONFIG_DASHBOARD.colunaTotalICP + linha).setValue(dados.total);
+    abaDashboard.getRange(CONFIG_DASHBOARD.colunaHigienizadosICP + linha).setValue(dados.higienizados);
+    abaDashboard.getRange(CONFIG_DASHBOARD.colunaDescartadosICP + linha).setValue(dados.descartados);
+  });
+
+  // Motivo de Descarte
+  if (CONFIG_DASHBOARD.semanaMotivos) {
+    abaDashboard.getRange(CONFIG_DASHBOARD.semanaMotivos).setValue("Semana " + semanaAtual);
+  }
+  CONFIG.MOTIVOS.forEach(function (motivo, i) {
+    const linha = CONFIG_DASHBOARD.inicioMotivos + i;
+    const quantidade = dadosSemana.motivos[motivo] || 0;
+    abaDashboard.getRange(CONFIG_DASHBOARD.colunaQuantidadeMotivos + linha).setValue(quantidade);
+  });
+}
+
+/**
+ * =====================================================================
+ * AUTOMAÇÃO SEPARADA: "acompanhamento"
+ * =====================================================================
+ * NÃO reprocessa as planilhas dos LDRs e não acessa o Drive. Só LÊ o
+ * que já está preenchido na aba "dashboard" (LDR, ICP, Motivo) e
+ * ESCREVE na coluna da semana correspondente na aba "acompanhamento".
+ * A semana é sempre lida diretamente da célula CONFIG_DASHBOARD.semanaTopo
+ * (C3, onde aparece "Semana 98") — nunca é adivinhada.
+ * =====================================================================
+ */
+function atualizarAcompanhamento() {
+  const planilhaAutomacao = SpreadsheetApp.openById(CONFIG.PLANILHA_AUTOMACAO_ID);
+
+  const abaDashboard = planilhaAutomacao.getSheetByName(CONFIG.NOME_ABA_DASHBOARD);
+  const abaAcompanhamento = planilhaAutomacao.getSheetByName(CONFIG_ACOMPANHAMENTO.NOME_ABA);
+
+  if (!abaDashboard || !abaAcompanhamento) {
+    throw new Error('Verifique se as abas "' + CONFIG.NOME_ABA_DASHBOARD + '" e "' +
+      CONFIG_ACOMPANHAMENTO.NOME_ABA + '" existem.');
+  }
+
+  // Confere se as linhas configuradas batem com as duas abas (antes de escrever)
+  conferirRotulos_(abaDashboard, esperadosDashboard_(), CONFIG.NOME_ABA_DASHBOARD);
+  conferirRotulos_(abaAcompanhamento, esperadosAcompanhamento_(), CONFIG_ACOMPANHAMENTO.NOME_ABA);
+
+  // 1. Ler diretamente do Dashboard qual semana está indicada lá
+  const semana = lerSemanaAtualDoDashboard_(abaDashboard);
+  if (!semana) {
+    throw new Error('Não foi possível identificar a semana atual na célula ' +
+      CONFIG_DASHBOARD.semanaTopo + ' do Dashboard (esperado algo como "Semana 98").');
+  }
+
+  // 2. Encontrar a coluna dessa semana na aba "acompanhamento"
+  const colunaSemana = encontrarColunaDaSemana_(abaAcompanhamento, semana);
+  if (!colunaSemana) {
+    throw new Error('A coluna "Semana ' + semana + '" não foi encontrada na linha ' +
+      CONFIG_ACOMPANHAMENTO.LINHA_CABECALHO_SEMANAS + ' da aba "' +
+      CONFIG_ACOMPANHAMENTO.NOME_ABA + '".');
+  }
+
+  // 3. Ler os blocos já preenchidos no Dashboard
+  const ldrDashboard = lerBlocoDashboard_(abaDashboard, CONFIG_DASHBOARD.inicioLDR,
+    CONFIG_DASHBOARD.colunaTotalLDR, CONFIG_DASHBOARD.colunaHigienizadosLDR,
+    CONFIG_DASHBOARD.colunaDescartadosLDR, CONFIG.LDRS);
+
+  const icpDashboard = lerBlocoDashboard_(abaDashboard, CONFIG_DASHBOARD.inicioICP,
+    CONFIG_DASHBOARD.colunaTotalICP, CONFIG_DASHBOARD.colunaHigienizadosICP,
+    CONFIG_DASHBOARD.colunaDescartadosICP, CONFIG.ICPS);
+
+  const motivosDashboard = {};
+  let totalDescartadosMotivos = 0;
+  CONFIG.MOTIVOS.forEach(function (motivo, i) {
+    const linha = CONFIG_DASHBOARD.inicioMotivos + i;
+    const quantidade = Number(abaDashboard.getRange(CONFIG_DASHBOARD.colunaQuantidadeMotivos + linha).getValue()) || 0;
+    motivosDashboard[motivo] = quantidade;
+    totalDescartadosMotivos += quantidade;
+  });
+
+  // 4. Total geral = soma dos LDRs (o Dashboard não guarda um total à parte)
+  const totalGeral = { total: 0, higienizados: 0, descartados: 0 };
+  CONFIG.LDRS.forEach(function (ldr) {
+    totalGeral.total += ldrDashboard[ldr].total;
+    totalGeral.higienizados += ldrDashboard[ldr].higienizados;
+    totalGeral.descartados += ldrDashboard[ldr].descartados;
+  });
+
+  // 5. Escrever tudo na coluna da semana em "acompanhamento"
+  escreverTripla_(abaAcompanhamento, colunaSemana, CONFIG_ACOMPANHAMENTO.geral, totalGeral);
+
+  CONFIG.ICPS.forEach(function (icp) {
+    const linhas = CONFIG_ACOMPANHAMENTO.icp[icp];
+    if (linhas) escreverTripla_(abaAcompanhamento, colunaSemana, linhas, icpDashboard[icp]);
+  });
+
+  CONFIG.LDRS.forEach(function (ldr) {
+    const linhas = CONFIG_ACOMPANHAMENTO.ldr[ldr];
+    if (linhas) escreverTripla_(abaAcompanhamento, colunaSemana, linhas, ldrDashboard[ldr]);
+  });
+
+  if (CONFIG_ACOMPANHAMENTO.motivoTotal) {
+    abaAcompanhamento.getRange(CONFIG_ACOMPANHAMENTO.motivoTotal, colunaSemana).setValue(totalDescartadosMotivos);
+  }
+  CONFIG.MOTIVOS.forEach(function (motivo) {
+    const linha = CONFIG_ACOMPANHAMENTO.motivo[motivo];
+    if (linha) abaAcompanhamento.getRange(linha, colunaSemana).setValue(motivosDashboard[motivo]);
+  });
+}
+
+/** Lê "Semana 98" da célula CONFIG_DASHBOARD.semanaTopo e devolve o número 98 (ou null). */
+function lerSemanaAtualDoDashboard_(abaDashboard) {
+  if (!CONFIG_DASHBOARD.semanaTopo) return null;
+  const texto = (abaDashboard.getRange(CONFIG_DASHBOARD.semanaTopo).getValue() || "").toString();
+  const match = texto.match(/(\d+)/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+/** Procura, na linha de cabeçalho da aba "acompanhamento", a coluna com "Semana N". */
+function encontrarColunaDaSemana_(abaAcompanhamento, semana) {
+  const linha = CONFIG_ACOMPANHAMENTO.LINHA_CABECALHO_SEMANAS;
+  const lastCol = abaAcompanhamento.getLastColumn();
+  const cabecalhos = abaAcompanhamento.getRange(linha, 1, 1, lastCol).getValues()[0];
+
+  for (let i = 0; i < cabecalhos.length; i++) {
+    const texto = (cabecalhos[i] || "").toString();
+    const match = texto.match(/(\d+)/);
+    if (match && parseInt(match[1], 10) === semana) return i + 1; // 1-based
+  }
+  return null;
+}
+
+/** Lê um bloco (Total/Higienizados/Descartados) do Dashboard para uma lista de chaves (LDRs ou ICPs). */
+function lerBlocoDashboard_(abaDashboard, linhaInicial, colTotal, colHig, colDesc, chaves) {
+  const resultado = {};
+  chaves.forEach(function (chave, i) {
+    const linha = linhaInicial + i;
+    resultado[chave] = {
+      total: Number(abaDashboard.getRange(colTotal + linha).getValue()) || 0,
+      higienizados: Number(abaDashboard.getRange(colHig + linha).getValue()) || 0,
+      descartados: Number(abaDashboard.getRange(colDesc + linha).getValue()) || 0
+    };
+  });
+  return resultado;
+}
+
+/** Escreve Total/Higienizados/Descartados nas linhas configuradas, numa coluna específica. */
+function escreverTripla_(aba, coluna, linhas, dados) {
+  if (!dados) return;
+  aba.getRange(linhas.total, coluna).setValue(dados.total);
+  aba.getRange(linhas.higienizados, coluna).setValue(dados.higienizados);
+  aba.getRange(linhas.descartados, coluna).setValue(dados.descartados);
+}
