@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    color: #222;
+    margin: 0;
+    padding: 16px;
+  }
+  h2 { margin: 0 0 12px 0; font-size: 16px; }
+  h3 { margin: 0 0 10px 0; font-size: 14px; }
+  textarea {
+    width: 100%;
+    height: 280px;
+    font-family: monospace;
+    font-size: 13px;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    resize: vertical;
+  }
+  .btn-row { margin-top: 12px; text-align: right; }
+  button {
+    padding: 8px 16px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    background: #f4f4f4;
+    cursor: pointer;
+    font-size: 13px;
+    margin-left: 8px;
+  }
+  button.primary { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+  button.primary:hover { background: #1662c4; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .erro { color: #c5221f; margin-top: 8px; white-space: pre-wrap; font-size: 12px; }
+
+  #telaResumo, #telaConfirmar { display: none; }
+  #resumoLista { max-height: 340px; overflow-y: auto; border: 1px solid #eee; border-radius: 4px; padding: 10px; }
+  .bdrBloco { margin-bottom: 10px; }
+  .bdrNome { font-weight: bold; }
+  .segLinha { padding-left: 14px; font-family: monospace; }
+
+  #confirmarTexto {
+    white-space: pre-wrap; font-family: monospace; font-size: 12px;
+    background: #fafafa; padding: 10px; border-radius: 4px;
+    max-height: 320px; overflow-y: auto;
+  }
+</style>
+</head>
+<body>
+
+<h2>Distribuir entre BDRs</h2>
+
+<!-- TELA 1: colar lista -->
+<div id="telaColar">
+  <div>Cole a lista de distribuição:</div>
+  <textarea id="textoColado" placeholder="Adriana: TI Software (75)&#10;Marina: Marketing (50) + Fintechs (25)&#10;..."></textarea>
+  <div class="erro" id="erroParse"></div>
+  <div class="btn-row">
+    <button class="primary" onclick="conferirDistribuicao()">Conferir distribuição</button>
+  </div>
+</div>
+
+<!-- TELA 2: resumo da interpretação -->
+<div id="telaResumo">
+  <h3>Distribuição</h3>
+  <div id="resumoLista"></div>
+  <div class="erro" id="erroDisponibilidade"></div>
+  <div class="btn-row">
+    <button onclick="voltarParaTexto()">Voltar</button>
+    <button class="primary" id="btnDistribuir" onclick="verificarEIrParaConfirmacao()">DISTRIBUIR</button>
+  </div>
+</div>
+
+<!-- TELA 3: confirmação final -->
+<div id="telaConfirmar">
+  <h3>Confirmar distribuição?</h3>
+  <div id="confirmarTexto"></div>
+  <div class="erro" id="erroFinal"></div>
+  <div class="btn-row">
+    <button onclick="cancelarConfirmacao()">Cancelar</button>
+    <button class="primary" id="btnConfirmarFinal" onclick="confirmarFinal()">Confirmar</button>
+  </div>
+</div>
+
+<script>
+  let LINHAS = []; // [{bdr, segmento, quantidade}]
+
+  // Parser da lista colada
+  function conferirDistribuicao() {
+    document.getElementById('erroParse').textContent = '';
+    const texto = document.getElementById('textoColado').value;
+    const linhasTexto = texto.split('\n').map(l => l.trim()).filter(l => l !== '');
+    const resultado = [];
+    const erros = [];
+
+    linhasTexto.forEach((linha, i) => {
+      const idx = linha.indexOf(':');
+      if (idx === -1) {
+        erros.push('Linha ' + (i + 1) + ' não segue o padrão "BDR: Segmento (qtd)": "' + linha + '"');
+        return;
+      }
+      const bdr = linha.substring(0, idx).trim();
+      const resto = linha.substring(idx + 1).trim();
+      if (!bdr || !resto) {
+        erros.push('Linha ' + (i + 1) + ' incompleta: "' + linha + '"');
+        return;
+      }
+
+      const partes = resto.split('+').map(p => p.trim()).filter(p => p !== '');
+      partes.forEach(parte => {
+        const m = parte.match(/^(.+?)\(\s*(\d+)\s*\)\s*$/);
+        if (!m) {
+          erros.push('Não entendi "' + parte + '" na linha: "' + linha + '"');
+          return;
+        }
+        resultado.push({
+          bdr: bdr,
+          segmento: m[1].trim(),
+          quantidade: parseInt(m[2], 10)
+        });
+      });
+    });
+
+    if (resultado.length === 0) {
+      document.getElementById('erroParse').textContent = erros.length
+        ? erros.join('\n')
+        : 'Nenhuma linha reconhecida. Verifique o formato "BDR: Segmento (qtd)".';
+      return;
+    }
+
+    if (erros.length > 0) {
+      document.getElementById('erroParse').textContent =
+        'Algumas linhas não foram entendidas e foram ignoradas:\n' + erros.join('\n');
+    }
+
+    LINHAS = resultado;
+    montarResumo();
+    document.getElementById('telaColar').style.display = 'none';
+    document.getElementById('telaResumo').style.display = 'block';
+  }
+
+  function voltarParaTexto() {
+    document.getElementById('telaResumo').style.display = 'none';
+    document.getElementById('telaColar').style.display = 'block';
+  }
+
+  // Resumo agrupado por BDR
+  function montarResumo() {
+    const porBdr = {};
+    LINHAS.forEach(l => {
+      if (!porBdr[l.bdr]) porBdr[l.bdr] = [];
+      porBdr[l.bdr].push(l);
+    });
+
+    const container = document.getElementById('resumoLista');
+    container.innerHTML = '';
+    Object.keys(porBdr).forEach(bdr => {
+      const bloco = document.createElement('div');
+      bloco.className = 'bdrBloco';
+      const nome = document.createElement('div');
+      nome.className = 'bdrNome';
+      nome.textContent = bdr;
+      bloco.appendChild(nome);
+      porBdr[bdr].forEach(l => {
+        const linha = document.createElement('div');
+        linha.className = 'segLinha';
+        linha.textContent = l.segmento + ': ' + l.quantidade;
+        bloco.appendChild(linha);
+      });
+      container.appendChild(bloco);
+    });
+
+    document.getElementById('erroDisponibilidade').textContent = '';
+  }
+
+  function verificarEIrParaConfirmacao() {
+    document.getElementById('erroDisponibilidade').textContent = '';
+    document.getElementById('btnDistribuir').disabled = true;
+
+    google.script.run
+      .withSuccessHandler(function (resp) {
+        document.getElementById('btnDistribuir').disabled = false;
+        if (!resp.ok) {
+          document.getElementById('erroDisponibilidade').textContent =
+            'Não foi possível concluir:\n\n' + resp.erros.join('\n');
+          return;
+        }
+        abrirConfirmacao();
+      })
+      .withFailureHandler(function (erro) {
+        document.getElementById('btnDistribuir').disabled = false;
+        document.getElementById('erroDisponibilidade').textContent = 'Erro: ' + erro.message;
+      })
+      .verificarDisponibilidadeDistribuicao(LINHAS);
+  }
+
+  // Confirmação
+  function abrirConfirmacao() {
+    document.getElementById('erroFinal').textContent = '';
+    const porBdr = {};
+    let total = 0;
+    LINHAS.forEach(l => {
+      porBdr[l.bdr] = (porBdr[l.bdr] || 0) + l.quantidade;
+      total += l.quantidade;
+    });
+
+    let texto = '';
+    Object.keys(porBdr).forEach(bdr => { texto += bdr + ': ' + porBdr[bdr] + '\n'; });
+    texto += '\nTotal: ' + total + ' leads';
+
+    document.getElementById('confirmarTexto').textContent = texto;
+    document.getElementById('telaResumo').style.display = 'none';
+    document.getElementById('telaConfirmar').style.display = 'block';
+  }
+
+  function cancelarConfirmacao() {
+    document.getElementById('telaConfirmar').style.display = 'none';
+    document.getElementById('telaResumo').style.display = 'block';
+  }
+
+  function confirmarFinal() {
+    document.getElementById('erroFinal').textContent = '';
+    document.getElementById('btnConfirmarFinal').disabled = true;
+
+    google.script.run
+      .withSuccessHandler(function (resp) {
+        document.getElementById('btnConfirmarFinal').disabled = false;
+        if (!resp.ok) {
+          document.getElementById('telaConfirmar').style.display = 'none';
+          document.getElementById('telaResumo').style.display = 'block';
+          document.getElementById('erroDisponibilidade').textContent =
+            'Não foi possível concluir:\n\n' + resp.erros.join('\n');
+          return;
+        }
+        alert(resp.relatorio);
+        google.script.host.close();
+      })
+      .withFailureHandler(function (erro) {
+        document.getElementById('btnConfirmarFinal').disabled = false;
+        document.getElementById('erroFinal').textContent = 'Erro: ' + erro.message;
+      })
+      .escreverDistribuicaoFinal(LINHAS);
+  }
+</script>
+
+</body>
+</html>
